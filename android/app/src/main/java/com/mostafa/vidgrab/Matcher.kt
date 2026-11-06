@@ -27,9 +27,9 @@ object Matcher {
     const val CONFIDENT = 1.7
     private var lastMb = 0L
 
-    fun get(url: String): String {
+    fun get(url: String, connectMs: Int = 10000, readMs: Int = 15000): String {
         val c = URL(url).openConnection() as HttpURLConnection
-        c.connectTimeout = 10000; c.readTimeout = 15000; c.setRequestProperty("User-Agent", UA); c.setRequestProperty("Accept", "application/json")
+        c.connectTimeout = connectMs; c.readTimeout = readMs; c.setRequestProperty("User-Agent", UA); c.setRequestProperty("Accept", "application/json")
         return c.inputStream.bufferedReader().use { it.readText() }.also { c.disconnect() }
     }
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")

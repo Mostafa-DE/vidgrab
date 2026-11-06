@@ -11,7 +11,7 @@
 
     <application
         android:name=".App"
-        android:label="VidGrab"
+        android:label="${appLabel}"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:extractNativeLibs="true"
@@ -24,9 +24,9 @@
             </intent-filter>
         </activity>
         <!-- Share sheet quick mode: compact sheet over the YouTube app -->
-        <activity android:name=".ShareActivity" android:exported="true" android:label="VidGrab"
+        <activity android:name=".ShareActivity" android:exported="true" android:label="${appLabel}"
             android:theme="@style/Theme.VidGrab.Sheet" android:excludeFromRecents="true"
-            android:taskAffinity="com.mostafa.vidgrab.share" android:launchMode="singleTask">
+            android:taskAffinity="${applicationId}.share" android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />

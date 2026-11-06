@@ -6,9 +6,9 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val secretsFile = file(System.getenv("VIDGRAB_SECRETS") ?: "${System.getProperty("user.home")}/.config/vidgrab/vidgrab.env")
 val secrets = Properties().apply {
-    val f = file(System.getenv("VIDGRAB_SECRETS") ?: "/home/box/secrets/vidgrab.env")
-    if (f.exists()) f.inputStream().use { load(it) }
+    if (secretsFile.exists()) secretsFile.inputStream().use { load(it) }
 }
 fun secret(k: String) = secrets.getProperty(k) ?: System.getenv(k) ?: ""
 
@@ -20,19 +20,22 @@ android {
         applicationId = "com.mostafa.vidgrab"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "2.1"
+        versionCode = 4
+        versionName = "2.2"
         ndk { abiFilters += listOf("arm64-v8a") }
+        manifestPlaceholders["appLabel"] = "VidGrab"
     }
     signingConfigs {
         create("release") {
-            storeFile = file("/home/box/secrets/vidgrab-release.jks")
+            storeFile = file(secret("VIDGRAB_KEYSTORE").ifEmpty { secretsFile.resolveSibling("vidgrab-release.jks").path })
             storePassword = secret("VIDGRAB_KEYSTORE_PASSWORD")
             keyAlias = "vidgrab"
             keyPassword = secret("VIDGRAB_KEYSTORE_PASSWORD")
         }
     }
     buildTypes {
+        // Debug = "VidGrab test": installs next to the real app (own package, data, yt-dlp) and logs VidGrabTiming (Timing.kt)
+        debug { applicationIdSuffix = ".test"; manifestPlaceholders["appLabel"] = "VidGrab test" }
         release {
             isMinifyEnabled = true
             isShrinkResources = true

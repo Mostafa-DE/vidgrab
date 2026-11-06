@@ -41,17 +41,20 @@ fun hasAudioPerm(ctx: Context) = ctx.checkSelfPermission(Dupes.permission()) == 
 fun rememberSmart(info: MediaInfo): Smart {
     val ctx = LocalContext.current
     val s = remember(info.url) { Smart() }
-    LaunchedEffect(info.url) {
+    // Partial (quick) info: wait for the full info, whose duration and YouTube artist/track tags both searches score with.
+    LaunchedEffect(info.url, info.partial) {
         if (!Settings(ctx).matchMeta) return@LaunchedEffect
         s.matching = true
+        if (info.partial) return@LaunchedEffect
         s.matches = withContext(Dispatchers.IO) { Matcher.find(info.artist, info.title, info.rawTitle, info.duration, info.known) }
         s.chosen = if ((s.matches.firstOrNull()?.score ?: 0.0) >= Matcher.CONFIDENT) 0 else -1
         s.matching = false
     }
-    LaunchedEffect(info.url, s.chosen, s.permTick) {
+    LaunchedEffect(info.url, info.partial, s.chosen, s.permTick) {
         if (!Settings(ctx).dupCheck) return@LaunchedEffect
         if (!hasAudioPerm(ctx)) { s.needPerm = true; return@LaunchedEffect }
         s.needPerm = false
+        if (info.partial) return@LaunchedEffect
         val lib = withContext(Dispatchers.IO) { Dupes.library(ctx) }
         val names = listOfNotNull(info.title to info.artist, s.match?.let { it.title to it.artist })
         s.dupes = withContext(Dispatchers.Default) {

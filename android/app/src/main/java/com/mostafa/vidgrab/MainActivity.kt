@@ -60,6 +60,7 @@ class MainActivity : ComponentActivity() {
 }
 
 suspend fun updateYtdl(ctx: android.content.Context): String = withContext(Dispatchers.IO) {
+    App.awaitInit()
     try {
         val r = YoutubeDL.getInstance().updateYoutubeDL(ctx.applicationContext, YoutubeDL.UpdateChannel._STABLE)
         Settings(ctx).lastUpdate = System.currentTimeMillis()

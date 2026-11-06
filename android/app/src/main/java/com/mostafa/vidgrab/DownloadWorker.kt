@@ -36,11 +36,12 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
     override suspend fun getForegroundInfo() = fg("VidGrab", "Starting…", -1)
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        App.awaitInit()  // a fresh process may still be initialising yt-dlp
         val s = Settings(applicationContext)
         val url = inputData.getString(K_URL)!!
-        val title = inputData.getString(K_TITLE) ?: "Download"
-        val artist = inputData.getString(K_ARTIST) ?: ""
-        val thumb = inputData.getString(K_THUMB)
+        var title = inputData.getString(K_TITLE) ?: "Download"
+        var artist = inputData.getString(K_ARTIST) ?: ""
+        var thumb = inputData.getString(K_THUMB)
         val audio = inputData.getBoolean(K_AUDIO, true)
         val height = inputData.getInt(K_HEIGHT, 0).takeIf { it > 0 }
         val dir = File(applicationContext.cacheDir, "dl/$procId").apply { mkdirs() }
@@ -48,8 +49,12 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         coroutineContext.job.invokeOnCompletion { if (it != null) runCatching { YoutubeDL.getInstance().destroyProcessById(procId) } }
         try {
             val match = if (audio) Match.fromJson(inputData.getString(K_MATCH)) else null
-            val infoFile = match?.let { m -> runCatching { applyMatch(url, m, dir) }.getOrNull() }
-            val req = (if (infoFile != null) YoutubeDLRequest(emptyList<String>()) else YoutubeDLRequest(url)).apply {
+            val pending = audio && inputData.getBoolean(K_MATCH_PENDING, false)
+            val applied = if (match != null || pending) runCatching { applyMatch(url, match, pending, dir) }.getOrNull() else null
+            val infoFile = applied?.first
+            // Found here (pending): list it the way enqueue would have, had the sheet known the match
+            if (match == null) applied?.second?.let { m -> listing(m, artist, title, thumb).let { (l, a, t) -> title = l; artist = a; thumb = t } }
+            val req = (if (infoFile != null) YoutubeDLRequest(emptyList<String>()) else YoutubeDLRequest(url)).cached().apply {
                 if (infoFile != null) { addOption("--load-info-json", infoFile.absolutePath) }
                 val args = (if (audio) Ytdl.audioArgs(s.audioMode, s.originalLang) else Ytdl.videoArgs(height, s.originalLang)).toMutableList()
                 val o = args.indexOf("-o"); args[o + 1] = dir.absolutePath + "/" + args[o + 1]
@@ -85,10 +90,12 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         } finally { dir.deleteRecursively() }
     }
 
-    /** Re-extracts the video, injects the official tags + cover and returns an info.json for --load-info-json. */
-    private fun applyMatch(url: String, m: Match, dir: File): File {
-        val req = YoutubeDLRequest(url).apply { addOption("-J"); addOption("--no-playlist") }
+    /** Re-extracts the video, injects the official tags + cover (of [given], or one found now when [pending]) and returns an info.json for --load-info-json, plus the match used. */
+    private fun applyMatch(url: String, given: Match?, pending: Boolean, dir: File): Pair<File, Match?> {
+        val req = YoutubeDLRequest(url).cached().apply { addOption("-J"); addOption("--no-playlist") }
         val j = org.json.JSONObject(YoutubeDL.getInstance().execute(req).out)
+        val m = matchFor(pending, given) { MediaInfo.parse(url, j).run { Matcher.find(artist, title, rawTitle, duration, known) } }
+            ?: return File(dir, "info.json").apply { writeText(j.toString()) } to null
         val ytHasAll = listOf("artist", "track", "album").all { j.optString(it).isNotBlank() }
         if (!ytHasAll) {  // YouTube Music/Topic tags win when present; otherwise use the official match
             j.put("artist", m.artist).put("track", m.title).put("album", m.album).put("album_artist", m.albumArtist)
@@ -100,7 +107,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             j.put("thumbnails", org.json.JSONArray().put(org.json.JSONObject().put("id", "official").put("url", m.cover)))
             j.remove("thumbnail")
         }
-        return File(dir, "info.json").apply { writeText(j.toString()) }
+        return File(dir, "info.json").apply { writeText(j.toString()) } to m
     }
     private fun coverOk(u: String) = runCatching {
         val c = java.net.URL(u).openConnection() as java.net.HttpURLConnection
@@ -114,13 +121,20 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
 
     companion object {
         const val K_URL = "url"; const val K_TITLE = "title"; const val K_ARTIST = "artist"; const val K_THUMB = "thumb"
-        const val K_AUDIO = "audio"; const val K_HEIGHT = "height"; const val TAG = "vidgrab"; const val K_MATCH = "match"
-        fun enqueue(ctx: Context, info: MediaInfo, audio: Boolean, height: Int? = null, match: Match? = null) {
-            val label = if (audio) "${match?.artist ?: info.artist} - ${match?.title ?: info.title}" else info.title
-            val thumb = match?.cover?.replace("1000x1000bb", "300x300bb")?.replace("front-1200", "front-250") ?: info.thumb
+        const val K_AUDIO = "audio"; const val K_HEIGHT = "height"; const val TAG = "vidgrab"; const val K_MATCH = "match"; const val K_MATCH_PENDING = "matchPending"
+        /** Tags for an MP3: the sheet's [given] match, or, when its search had not finished ([pending]), [find]'s top result if confident (the sheet's rule); null = YouTube info. */
+        fun matchFor(pending: Boolean, given: Match?, find: () -> List<Match>): Match? =
+            given ?: if (pending) find().firstOrNull()?.takeIf { it.score >= Matcher.CONFIDENT } else null
+        /** MP3 label ("Artist - Title"), artist and thumbnail for the download list, notifications and history: the official match's (small cover), else YouTube's. */
+        fun listing(m: Match?, artist: String, title: String, thumb: String?) = Triple("${m?.artist ?: artist} - ${m?.title ?: title}", m?.artist ?: artist,
+            m?.cover?.replace("1000x1000bb", "300x300bb")?.replace("front-1200", "front-250") ?: thumb)
+        /** [matchPending]: MP3 tapped before the official-metadata search finished, so the worker searches itself. */
+        fun enqueue(ctx: Context, info: MediaInfo, audio: Boolean, height: Int? = null, match: Match? = null, matchPending: Boolean = false) {
+            val (mp3Label, artist, thumb) = listing(match, info.artist, info.title, info.thumb)
+            val label = if (audio) mp3Label else info.title
             val req = OneTimeWorkRequestBuilder<DownloadWorker>()
-                .setInputData(workDataOf(K_URL to info.url, K_TITLE to label, K_ARTIST to (match?.artist ?: info.artist), K_THUMB to thumb,
-                    K_AUDIO to audio, K_HEIGHT to (height ?: 0), K_MATCH to match?.toJson()?.toString()))
+                .setInputData(workDataOf(K_URL to info.url, K_TITLE to label, K_ARTIST to artist, K_THUMB to thumb,
+                    K_AUDIO to audio, K_HEIGHT to (height ?: 0), K_MATCH to match?.toJson()?.toString(), K_MATCH_PENDING to matchPending))
                 .addTag(TAG).addTag("t:" + label.take(100)).addTag("th:" + (thumb ?: "")).addTag(if (audio) "k:mp3" else "k:video")
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .build()

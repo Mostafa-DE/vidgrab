@@ -24,9 +24,14 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.net.URLEncoder
+import java.util.UUID
 
 private val Violet = Color(0xFF6A1BD8); private val Magenta = Color(0xFFE0247C)
 
@@ -42,8 +47,20 @@ fun VidGrabTheme(content: @Composable () -> Unit) {
 }
 
 suspend fun fetchInfo(url: String): MediaInfo = withContext(Dispatchers.IO) {
-    val req = YoutubeDLRequest(url).apply { addOption("-J"); addOption("--no-playlist") }
-    MediaInfo.parse(url, JSONObject(YoutubeDL.getInstance().execute(req).out))
+    App.awaitInit()
+    val req = YoutubeDLRequest(url).cached().apply { addOption("-J"); addOption("--no-playlist") }
+    // execute() blocks through cancellation (a job's invokeOnCompletion only runs after it returns), so a sibling kills
+    // the process as soon as the caller is cancelled, e.g. when the share sheet closes for a download that extracts on its own.
+    val id = UUID.randomUUID().toString()
+    val kill = launch(start = CoroutineStart.UNDISPATCHED) { try { awaitCancellation() } finally { runCatching { YoutubeDL.getInstance().destroyProcessById(id) } } }
+    val r = try { Timing.time("fetchInfo execute") { YoutubeDL.getInstance().execute(req, id) } } finally { kill.cancel() }
+    MediaInfo.parse(url, JSONObject(r.out)).also { if (BuildConfig.DEBUG) Timing.log("fetchInfo exit ${r.exitCode}, stdout ${r.out.length} chars, ${it.choices.size} choices") }
+}
+
+/** YouTube oEmbed (~0.3 s): title, channel and thumbnail long before [fetchInfo] (7-14 s). Null when it fails or isn't YouTube. */
+suspend fun quickInfo(url: String): MediaInfo? = if (!isYoutube(url)) null else withContext(Dispatchers.IO) {
+    runCatching { MediaInfo.oembed(url, JSONObject(Matcher.get("https://www.youtube.com/oembed?format=json&url=" + URLEncoder.encode(url, "UTF-8"), 3000, 3000))) }
+        .onFailure { if (BuildConfig.DEBUG) Timing.log("quick info failed: $it") }.getOrNull()
 }
 
 fun extractUrl(text: String?): String? = text?.let { Regex("""https?://\S+""").find(it)?.value }
@@ -55,7 +72,7 @@ fun ResultCard(info: MediaInfo, compact: Boolean = false) {
         Box {
             AsyncImage(model = info.thumb, contentDescription = null, contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxWidth().aspectRatio(if (compact) 2.2f else 16f / 9f))
-            Surface(color = Color.Black.copy(alpha = .7f), shape = RoundedCornerShape(8.dp),
+            if (info.duration > 0) Surface(color = Color.Black.copy(alpha = .7f), shape = RoundedCornerShape(8.dp),
                 modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp)) {
                 Text(dur(info.duration), color = Color.White, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
             }

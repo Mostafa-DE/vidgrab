@@ -1,7 +1,9 @@
 package com.mostafa.vidgrab
 
 import android.content.Context
+import com.yausername.youtubedl_android.YoutubeDLRequest
 import org.json.JSONObject
+import java.io.File
 
 enum class AudioMode(val label: String) { MP3_320("MP3 320 kbps (CBR)"), MP3_V0("MP3 V0 (~245 kbps VBR)"), MP3_192("MP3 192 kbps"), ORIGINAL("Best original (M4A/Opus, no re-encode)") }
 
@@ -51,19 +53,27 @@ object Ytdl {
     }
 }
 
+/** Every yt-dlp request keeps its cache between runs (youtubedl-android passes --no-cache-dir otherwise); saves ~0.3 s per lookup. */
+fun YoutubeDLRequest.cached() = apply { addOption("--cache-dir", File(MyApp.ctx.cacheDir, "yt-dlp").absolutePath) }
+
 data class VideoChoice(val height: Int?, val label: String, val detail: String)
 
+/** [partial] = quick oEmbed info: no duration or formats yet, default [choices] without sizes. */
 data class MediaInfo(val url: String, val title: String, val artist: String, val duration: Int, val thumb: String?, val choices: List<VideoChoice>,
-                     val rawTitle: String = title, val known: Boolean = true, val ytAlbum: String? = null) {
+                     val rawTitle: String = title, val known: Boolean = true, val ytAlbum: String? = null, val partial: Boolean = false) {
     companion object {
         private val junk = Regex("""(?i)\s*[\(\[][^\)\]]*\b(official|lyrics?|video|audio|visuali[sz]er|hd|hq|4k|mv|ncs|copyright|music)\b[^\)\]]*[\)\]]""")
+        /** Artist, title and known (= reliable split) from YouTube's tags, else "Artist - Title", else the uploader without " - Topic". */
+        private fun names(rawTitle: String, artistTag: String, trackTag: String, uploader: String): Triple<String, String, Boolean> {
+            val dash = Regex("""^(.+?)\s+[-–—]\s+(.+)$""").find(rawTitle)
+            val artist = artistTag.ifBlank { null } ?: dash?.groupValues?.get(1) ?: uploader.replace(Regex("""\s*-\s*Topic$"""), "")
+            val title = (trackTag.ifBlank { null } ?: dash?.groupValues?.get(2) ?: rawTitle)
+                .replace(Regex("""\s*\|.*$"""), "").replace(junk, "").trim()
+            return Triple(artist, title, artistTag.isNotBlank() || dash != null)
+        }
         fun parse(url: String, j: JSONObject): MediaInfo {
             val rawTitle = j.optString("title")
-            val dash = Regex("""^(.+?)\s+[-–—]\s+(.+)$""").find(rawTitle)
-            val artist = j.optString("artist").ifBlank { null } ?: dash?.groupValues?.get(1)
-                ?: j.optString("uploader").replace(Regex("""\s*-\s*Topic$"""), "")
-            val title = (j.optString("track").ifBlank { null } ?: dash?.groupValues?.get(2) ?: rawTitle)
-                .replace(Regex("""\s*\|.*$"""), "").replace(junk, "").trim()
+            val (artist, title, known) = names(rawTitle, j.optString("artist"), j.optString("track"), j.optString("uploader"))
             val fmts = j.optJSONArray("formats")
             var audio = 0.0
             val best = HashMap<Int, Double>()
@@ -84,7 +94,14 @@ data class MediaInfo(val url: String, val title: String, val artist: String, val
                 .forEach { choices += VideoChoice(it, name(it), human(best[it]!! + audio)) }
             return MediaInfo(url, title, artist, j.optInt("duration"),
                 j.optString("thumbnail").ifBlank { null }, choices, rawTitle,
-                known = j.optString("artist").isNotBlank() || dash != null, ytAlbum = j.optString("album").ifBlank { null })
+                known = known, ytAlbum = j.optString("album").ifBlank { null })
+        }
+        /** YouTube oEmbed (title, author_name = uploader, thumbnail_url) as partial info; throws without a title. */
+        fun oembed(url: String, j: JSONObject): MediaInfo {
+            val rawTitle = j.getString("title")
+            val (artist, title, known) = names(rawTitle, "", "", j.optString("author_name"))
+            return MediaInfo(url, title, artist, 0, j.optString("thumbnail_url").ifBlank { null },
+                listOf(VideoChoice(null, "Best", "")) + listOf(1080, 720, 480).map { VideoChoice(it, "${it}p", "") }, rawTitle, known, partial = true)
         }
         fun human(b: Double) = when { b <= 0 -> "size ?"; b > 1e9 -> "%.2f GB".format(b / 1e9); else -> "%.0f MB".format(b / 1e6) }
     }
