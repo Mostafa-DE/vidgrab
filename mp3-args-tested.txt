@@ -1,0 +1,70 @@
+-f
+bestaudio/best
+-S
+lang,abr,asr
+--no-playlist
+-x
+--audio-format
+mp3
+--audio-quality
+320K
+--ppa
+ExtractAudio+ffmpeg_o:-b:a 320k -ar 44100
+--embed-metadata
+--embed-thumbnail
+--convert-thumbnails
+jpg
+--ppa
+ThumbnailsConvertor+ffmpeg_o:-c:v mjpeg -q:v 2 -vf crop="'if(gt(ih,iw),iw,ih)':'if(gt(iw,ih),ih,iw)'"
+--ppa
+EmbedThumbnail+ffmpeg_o:-id3v2_version 3
+--ppa
+Metadata+ffmpeg_o:-id3v2_version 3
+--parse-metadata
+title:%(meta_title)s
+--parse-metadata
+%(uploader|Unknown)s:%(meta_artist)s
+--parse-metadata
+title:(?P<meta_artist>.+?)\s+[-–—]\s+(?P<meta_title>.+)
+--parse-metadata
+%(track,meta_title)s:%(meta_title)s
+--parse-metadata
+%(artist,meta_artist)s:%(meta_artist)s
+--replace-in-metadata
+meta_title
+\s*\|.*$
+
+--replace-in-metadata
+meta_title
+(?i)\s*[\(\[][^\)\]]*\b(official|lyrics?|video|audio|visuali[sz]er|hd|hq|4k|mv|m/v|ncs|copyright|music)\b[^\)\]]*[\)\]]
+
+--replace-in-metadata
+meta_title
+(?i)\s+\b(HD|HQ|4K|1080p)$
+
+--replace-in-metadata
+meta_title,meta_artist
+(?i)\s*[\(\[]?\b(?:ft|feat|featuring)\.?\s+([^\)\]]+?)[\)\]]?\s*$
+ (feat. \1)
+--replace-in-metadata
+meta_artist
+(?i)\s*-\s*Topic$|VEVO$
+
+--parse-metadata
+%(album,meta_title)s:%(meta_album)s
+--parse-metadata
+%(album_artist,meta_artist)s:%(meta_album_artist)s
+--parse-metadata
+%(release_year,upload_date>%Y)s:%(meta_date)s
+--parse-metadata
+:(?P<meta_description>)
+--parse-metadata
+:(?P<meta_synopsis>)
+--parse-metadata
+:(?P<meta_comment>)
+--parse-metadata
+:(?P<meta_purl>)
+--parse-metadata
+%(genre|)s:%(meta_genre)s
+-o
+%(meta_artist).80B - %(meta_title).120B.%(ext)s
